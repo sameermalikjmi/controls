@@ -176,7 +176,10 @@ class Turtlebot():
         # We have successfully calculated the start-goal line
         self.start_goal_line_calculated = True
 
-    self.go_to_goal()
+        if self.robot_mode == "go to goal mode":
+            self.go_to_goal()
+        elif self.robot_mode == "wall following mode":
+            self.follow_wall()
 
     def go_to_goal(self):
         if not self.isObstacle:
@@ -197,66 +200,168 @@ class Turtlebot():
                                          or dt.ranges[355] < (thr1 + 0.1) or dt.ranges[345] < (thr1 + 0.1)):
                 self.direction = 1
 
-        # if no obstacle, drive forward
-        if dt.ranges[0] > thr1 and dt.ranges[15] > thr1 and dt.ranges[30] > thr2 and dt.ranges[345] > thr1 and \
-                dt.ranges[330] > thr2:
-            self.vel_obs.linear.x = 0.2
-            self.vel_obs.angular.z = 0.0
-            self.isObstacle = False
+        desired_theta = math.atan2(
+            self.goal.y - self.pose.y,
+            self.goal.x - self.pose.x)
+
+        # How far off is the current heading in radians?
+        theta_error = desired_theta - self.pose.theta
+
         # if there is an obstacle
-        else:
+        if not (dt.ranges[0] > thr1 and dt.ranges[15] > thr1 and dt.ranges[30] > thr2 and dt.ranges[345] > thr1 and \
+                dt.ranges[330] > thr2):
             # Change the mode to wall following mode.
             self.robot_mode = "wall following mode"
 
-            # Record the hit point
-            self.hit_point_x = self.pose.x
-            self.hit_point_y = self.pose.y
+            # Record the hit point  
+            self.hit_point_x = self.current_x
+            self.hit_point_y = self.current_y
 
-            # Record the distance to the goal from the
+            # Record the distance to the goal from the 
             # hit point
             self.distance_to_goal_from_hit_point = (
                 math.sqrt((
                               pow(self.goal_x_coordinates[self.goal_idx] - self.hit_point_x, 2)) + (
                               pow(self.goal_y_coordinates[self.goal_idx] - self.hit_point_y, 2))))
 
-            self.vel_obs.linear.x = 0.0  # stop
-            self.vel_obs.angular.z = 0.5 * self.direction  # rotate based on direction chosen earlier
+            # Make a hard left to begin following wall
+            self.vel_obs.angular.z = 0.5
+
+            # Send command to the robot
+            self.publisher_.publish(msg)
+            
             self.isObstacle = True
 
+            # Exit this function        
+            return
+        
+        # if there is no obstacle and heading is bad
+        elif math.fabs(theta_error) > 0.1:
+           if theta_error > 0:
+                # Turn left (counterclockwise)
+                self.vel_obs.angular.z = self.turning_speed_yaw_adjustment
+            else:
+                # Turn right (clockwise)
+                self.vel_obs.angular.z = -self.turning_speed_yaw_adjustment
+                
+        # Else drive straight
+        else:
+            self.vel_obs.linear.x = 0.2
+            self.vel_obs.angular.z = 0.0
+            self.isObstacle = False
+            
+            
         # if there is still an obstacle at the sides, override turning and keep going straight
         if dt.ranges[90] < thr2 or dt.ranges[45] < thr1 or dt.ranges[270] < thr2 or dt.ranges[315] < thr1:
             self.isObstacle = True
-        # If there isn't an obstacle anymore, adjust the heading back to the M-Line
-        else:
-            # Calculate the desired heading based on the current position
-            # and the desired position
-            desired_yaw = math.atan2(
-                self.goal_y_coordinates[self.goal_idx] - self.pose.y,
-                self.goal_x_coordinates[self.goal_idx] - self.pose.x)
 
-            # How far off is the current heading in radians?
-            yaw_error = desired_yaw - self.pose.yaw
+    def follow_wall(self):
+        """
+        This method causes the robot to follow the boundary of a wall.
+        """
+        # Create a geometry_msgs/Twist message
+        msg = Twist()
+        self.vel_obs.linear.x = 0.0
+        self.vel_obs.linear.y = 0.0
+        self.vel_obs.angular.z = 0.0
 
-            # Adjust heading if heading is not good enough
-            if math.fabs(yaw_error) > self.yaw_precision:
+        # Special code if Bug2 algorithm is activated
+        if self.bug2_switch == "ON":
 
-                if yaw_error > 0:
-                    # Turn left (counterclockwise)
-                    msg.angular.z = self.turning_speed_yaw_adjustment
-                else:
-                    # Turn right (clockwise)
-                    msg.angular.z = -self.turning_speed_yaw_adjustment
+            # Calculate the point on the start-goal 
+            # line that is closest to the current position
+            x_start_goal_line = self.current_x
+            y_start_goal_line = (
+                                        self.start_goal_line_slope_m * (
+                                    x_start_goal_line)) + (
+                                    self.start_goal_line_y_intercept)
 
-                # Command the robot to adjust the heading
-                self.publisher_.publish(msg)
+            # Calculate the distance between current position 
+            # and the start-goal line
+            distance_to_start_goal_line = math.sqrt(pow(
+                x_start_goal_line - self.current_x, 2) + pow(
+                y_start_goal_line - self.current_y, 2))
 
-            # Change the state if the heading is good enough
+            # If we hit the start-goal line again               
+            if distance_to_start_goal_line < self.distance_to_start_goal_line_precision:
+
+                # Determine if we need to leave the wall and change the mode
+                # to 'go to goal'
+                # Let this point be the leave point
+                self.leave_point_x = self.current_x
+                self.leave_point_y = self.current_y
+
+                # Record the distance to the goal from the leave point
+                self.distance_to_goal_from_leave_point = math.sqrt(
+                    pow(self.goal_x_coordinates[self.goal_idx]
+                        - self.leave_point_x, 2)
+                    + pow(self.goal_y_coordinates[self.goal_idx]
+                          - self.leave_point_y, 2))
+
+                # Is the leave point closer to the goal than the hit point?
+                # If yes, go to goal. 
+                diff = self.distance_to_goal_from_hit_point - self.distance_to_goal_from_leave_point
+                if diff > self.leave_point_to_hit_point_diff:
+                    # Change the mode. Go to goal.
+                    self.robot_mode = "go to goal mode"
+
+                # Exit this function
+                return
+
+                # Logic for following the wall
+        # >d means no wall detected by that laser beam
+        # <d means an wall was detected by that laser beam
+        d = thr1
+        
+        self.leftfront_dist = (dt.ranges[45] + dt.ranges[90])/2
+        self.rightfront_dist = (dt.ranges[270] + dt.ranges[315])/2
+        self.front_dist = dt.ranges[0]
+
+        if self.leftfront_dist > d and self.front_dist > d and self.rightfront_dist > d:
+            self.wall_following_state = "search for wall"
+            self.vel_obs.linear.x = 0.2
+            self.vel_obs.angular.z = -0.25  # turn right to find wall
+
+        elif self.leftfront_dist > d and self.front_dist < d and self.rightfront_dist > d:
+            self.wall_following_state = "turn left"
+            self.vel_obs.angular.z = 0.5
+
+
+        elif (self.leftfront_dist > d and self.front_dist > d and self.rightfront_dist < d):
+            if (self.rightfront_dist < self.dist_too_close_to_wall):
+                # Getting too close to the wall
+                self.wall_following_state = "turn left"
+                self.vel_obs.linear.x = 0.2
+                self.vel_obs.angular.z = 0.5
             else:
-                # Change the state
-                self.go_to_goal_state = "go straight"
+                # Go straight ahead
+                self.wall_following_state = "follow wall"
+                self.vel_obs.linear.x = 0.2
 
-                # Command the robot to stop turning
-                self.publisher_.publish(msg)
+        elif self.leftfront_dist < d and self.front_dist > d and self.rightfront_dist > d:
+            self.wall_following_state = "search for wall"
+            self.vel_obs.linear.x = 0.2
+            self.vel_obs.angular.z = -0.25  # turn right to find wall
+
+        elif self.leftfront_dist > d and self.front_dist < d and self.rightfront_dist < d:
+            self.wall_following_state = "turn left"
+            self.vel_obs.angular.z = 0.5
+
+        elif self.leftfront_dist < d and self.front_dist < d and self.rightfront_dist > d:
+            self.wall_following_state = "turn left"
+            self.vel_obs.angular.z = 0.5
+
+        elif self.leftfront_dist < d and self.front_dist < d and self.rightfront_dist < d:
+            self.wall_following_state = "turn left"
+            self.vel_obs.angular.z = 0.5
+
+        elif self.leftfront_dist < d and self.front_dist > d and self.rightfront_dist < d:
+            self.wall_following_state = "search for wall"
+            self.vel_obs.linear.x = 0.2
+            self.vel_obs.angular.z = -0.25  # turn right to find wall
+
+        else:
+            pass
 
     def odom_callback(self, msg):
         # get pose = (x, y, theta) from odometry topic
