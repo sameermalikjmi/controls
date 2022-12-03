@@ -154,31 +154,6 @@ class Turtlebot():
         thr1 = 0.35  # Laser scan range threshold
         thr2 = 0.25
 
-    # Each time we start towards a new goal, we need to calculate the start-goal line
-    if self.start_goal_line_calculated == False:
-        # Make sure go to goal mode is set.
-        self.robot_mode = "go to goal mode"
-
-        self.start_goal_line_xstart = self.pose.x
-        self.start_goal_line_xgoal = self.goal_x_coordinates[self.goal_idx]
-        self.start_goal_line_ystart = self.pose.y
-        self.start_goal_line_ygoal = self.goal_y_coordinates[self.goal_idx]
-
-        # Calculate the slope of the start-goal line m
-        self.start_goal_line_slope_m = (
-                (self.start_goal_line_ygoal - self.start_goal_line_ystart) / (
-                self.start_goal_line_xgoal - self.start_goal_line_xstart))
-
-        # Solve for the intercept b
-        self.start_goal_line_y_intercept = self.start_goal_line_ygoal - (
-                self.start_goal_line_slope_m * self.start_goal_line_xgoal)
-
-        # We have successfully calculated the start-goal line
-        self.start_goal_line_calculated = True
-
-    self.go_to_goal()
-
-    def go_to_goal(self):
         if not self.isObstacle:
             # if obstacle in front and open to the right, turn right
             if (dt.ranges[0] < (thr1 + 0.1) and (dt.ranges[20] > 2 * thr1 or dt.ranges[45] > 2 * thr1)):
@@ -197,28 +172,28 @@ class Turtlebot():
                                          or dt.ranges[355] < (thr1 + 0.1) or dt.ranges[345] < (thr1 + 0.1)):
                 self.direction = 1
 
+        desired_theta = math.atan2(self.goal_y_coordinates[self.goal_idx] - self.current_y,
+                                    self.goal_x_coordinates[self.goal_idx] - self.current_x)
+
+        theta_error = desired_theta - self.pose.theta
+
+        # Adjust heading if heading is not good enough and there is not an obstacle in the way - MAY NEED TO ADJUST THRESHOLD
+        if math.fabs(theta_error) > 0.1 and not self.isObstacle:
+            if yaw_error > 0:
+                # Turn left (counterclockwise)
+                self.vel_obs.angular.z = 0.5
+            else:
+                # Turn right (clockwise)
+                self.vel_obs.angular.z  = -0.5
+
         # if no obstacle, drive forward
         if dt.ranges[0] > thr1 and dt.ranges[15] > thr1 and dt.ranges[30] > thr2 and dt.ranges[345] > thr1 and \
                 dt.ranges[330] > thr2:
             self.vel_obs.linear.x = 0.2
             self.vel_obs.angular.z = 0.0
             self.isObstacle = False
-        # if there is an obstacle
+        # if there is an obstacle, turn away from it
         else:
-            # Change the mode to wall following mode.
-            self.robot_mode = "wall following mode"
-
-            # Record the hit point
-            self.hit_point_x = self.pose.x
-            self.hit_point_y = self.pose.y
-
-            # Record the distance to the goal from the
-            # hit point
-            self.distance_to_goal_from_hit_point = (
-                math.sqrt((
-                              pow(self.goal_x_coordinates[self.goal_idx] - self.hit_point_x, 2)) + (
-                              pow(self.goal_y_coordinates[self.goal_idx] - self.hit_point_y, 2))))
-
             self.vel_obs.linear.x = 0.0  # stop
             self.vel_obs.angular.z = 0.5 * self.direction  # rotate based on direction chosen earlier
             self.isObstacle = True
@@ -226,37 +201,6 @@ class Turtlebot():
         # if there is still an obstacle at the sides, override turning and keep going straight
         if dt.ranges[90] < thr2 or dt.ranges[45] < thr1 or dt.ranges[270] < thr2 or dt.ranges[315] < thr1:
             self.isObstacle = True
-        # If there isn't an obstacle anymore, adjust the heading back to the M-Line
-        else:
-            # Calculate the desired heading based on the current position
-            # and the desired position
-            desired_yaw = math.atan2(
-                self.goal_y_coordinates[self.goal_idx] - self.pose.y,
-                self.goal_x_coordinates[self.goal_idx] - self.pose.x)
-
-            # How far off is the current heading in radians?
-            yaw_error = desired_yaw - self.pose.yaw
-
-            # Adjust heading if heading is not good enough
-            if math.fabs(yaw_error) > self.yaw_precision:
-
-                if yaw_error > 0:
-                    # Turn left (counterclockwise)
-                    msg.angular.z = self.turning_speed_yaw_adjustment
-                else:
-                    # Turn right (clockwise)
-                    msg.angular.z = -self.turning_speed_yaw_adjustment
-
-                # Command the robot to adjust the heading
-                self.publisher_.publish(msg)
-
-            # Change the state if the heading is good enough
-            else:
-                # Change the state
-                self.go_to_goal_state = "go straight"
-
-                # Command the robot to stop turning
-                self.publisher_.publish(msg)
 
     def odom_callback(self, msg):
         # get pose = (x, y, theta) from odometry topic
