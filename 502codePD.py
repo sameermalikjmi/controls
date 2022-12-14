@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from math import pi, sqrt, atan2, cos, sin
+from math import pi, sqrt, atan2, cos, sin, fabs
 import numpy as np
 import rospy
 import tf
@@ -9,7 +9,6 @@ from std_msgs.msg import Empty
 from sensor_msgs.msg import LaserScan  # LaserScan type message is defined in sensor_msgs
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist, Pose2D
-from math import pi, atan2
 
 
 class Controller:
@@ -80,6 +79,7 @@ class Turtlebot():
             np.savetxt('trajectory.csv', np.array(self.trajectory), delimiter=',', fmt='%f')
 
     def run(self):
+    	#I kept bas
         seg1stat = 0
         velstart = 0
         dist = 0
@@ -172,13 +172,20 @@ class Turtlebot():
                                          or dt.ranges[355] < (thr1 + 0.1) or dt.ranges[345] < (thr1 + 0.1)):
                 self.direction = 1
 
-        desired_theta = math.atan2(self.goal_y_coordinates[self.goal_idx] - self.current_y,
+        # Calculare the error in the current heading
+        desired_theta = atan2(self.goal_y_coordinates[self.goal_idx] - self.current_y,
                                     self.goal_x_coordinates[self.goal_idx] - self.current_x)
 
         theta_error = desired_theta - self.pose.theta
 
+        # General Flow of this function:
+        	# - If there is no obstacle calculate the line directly to goal and turn towards it
+        	# - If there is an obstacle, turn away from it as before (this is the part where I mentioned I didn't know how to write the optimization so it turns the direction with less obstacle)
+        	# - If there is still an obstacle at the sides, go straight (just like normal code)
+        	# - Once the obstacle has removed, we should start from the top and create a new m-line(direct to goal), turn towards it, etc ...
+
         # Adjust heading if heading is not good enough and there is not an obstacle in the way - MAY NEED TO ADJUST THRESHOLD
-        if math.fabs(theta_error) > 0.1 and not self.isObstacle:
+        if fabs(theta_error) > 0.1 and not self.isObstacle:
             if yaw_error > 0:
                 # Turn left (counterclockwise)
                 self.vel_obs.angular.z = 0.5
