@@ -67,13 +67,16 @@ class Turtlebot():
 		self.hitpoint = 0
 
 		self.inp1 = input("Choose 'PID' or 'PD' for the controller: " )
-		self.inp2 = input("Choose 'Bug2' or 'MBug' for the algorithm:")
+		self.inp2 = input("Choose 'OAP' or 'Bug2' for the algorithm: ")
 
 		self.left_dist = 999999.9 # Left
 		self.leftfront_dist = 999999.9 # Left-front
 		self.front_dist = 999999.9 # Front
 		self.rightfront_dist = 999999.9 # Right-front
 		self.right_dist = 999999.9 # Right
+
+		self.alg = 0
+		self.tight_track = 0
  
 		
 		# reset odometry to zero
@@ -135,7 +138,7 @@ class Turtlebot():
 			kp = 1
 			ki = 0
 			kd = 0.005
-			kp_g = 0.5
+			kp_g = 0.3
 			ki_g = 0
 			kd_g = 0.005
 
@@ -144,10 +147,10 @@ class Turtlebot():
 			rospy.signal_shutdown("Incorrect Controller Input!")
 
 		# Check that the user inputted the right algorithm
-		if self.inp2 == "Bug2":
-			alg = 1
-		elif self.inp2 == "MBug":
-			alg = 2
+		if self.inp2 == "OAP":
+			self.alg = 1
+		elif self.inp2 == "Bug2":
+			self.alg = 2
 		else:
 			print("Incorrect Algorithm Input!")
 			rospy.signal_shutdown("Incorrect Algorithm Input!")
@@ -164,8 +167,43 @@ class Turtlebot():
 				Controller.setPoint(self.control,desdir)
 				Controller.setPID(self.control, kp , ki, kd)
 
+				# OAP Algorithm, inspired by MBug
+				if self.alg == 1:
+					while velstart == 0:
+						rec = Controller.update(self.control, self.pose.theta)
+						rospy.loginfo("Rotating before start:" + str(rec))
+						self.vel.angular.z = rec
+						# we assume no obstacle direclty in front of robot starting point
+						self.vel.linear.x = 0
+						self.vel_pub.publish(self.vel)
+						if ((self.pose.theta < (desdir+0.04)) and (self.pose.theta > (desdir-0.04))):
+							velstart = 1
+
+					if pos_error > 0.1:
+						rec = Controller.update(self.control, self.pose.theta)
+						#rospy.loginfo("Recommended from PD:" + str(rec))
+						if self.vel_obs.angular.z > 0 or self.isObstacle:
+							self.vel.angular.z = self.vel_obs.angular.z
+							self.vel.linear.x = self.vel_obs.linear.x
+						else:
+							self.vel.angular.z = rec
+							self.vel.linear.x = self.vel_obs.linear.x
+
+					# Check if we're at the target
+					#if (self.pose.y > (self.goaly-5) and self.pose.y < (self.goaly+5)):
+					#	if (self.pose.x < (self.goalx-0.01)):
+					#		self.vel.linear.x = self.vel_obs.linear.x
+					#	else:
+					#		self.vel.linear.x = 0
+					#		self.vel.angular.z = 0
+					#		seg1stat = 1
+					else:
+						self.vel.linear.x = 0
+						self.vel.angular.z = 0
+						seg1stat = 1
+
 				# Bug 2 Algorithm
-				if alg == 1:
+				if self.alg == 2:
 					# Before starting linear velocity, we change the heading
 					while velstart == 0:
 						# Asking the controller for recommended heading
@@ -265,21 +303,19 @@ class Turtlebot():
 						self.vel.angular.z = 0
 						seg1stat = 1
 
-				if alg == 2:
-					# Fill in with MBug
-					seg1stat = 1
-
 				# Continuously aggregating the distance traveled
 				dist = dist + sqrt((new_x-old_x)**2 + (new_y-old_y)**2)
 				old_x = self.pose.x
 				old_y = self.pose.y
 				self.vel_pub.publish(self.vel)
+				t = rospy.get_rostime()
 				#rospy.loginfo(self.vel)
 				#rospy.loginfo("running")
 				self.rate.sleep()
 
 			# Exited the seg1stat loop, we reached the destination and the program can shut down 
 			rospy.loginfo("Distance traveled = " + str(dist))
+			rospy.loginfo("Time elapsed =" + str(t))
 			rospy.loginfo("finished")
 			break
 
@@ -288,7 +324,7 @@ class Turtlebot():
 		#print("Front")
 		#print (dt.ranges[0])
 		#print("Right")
-		print (dt.ranges[270])
+		#print (dt.ranges[270])
 		#print("Back")
 		#print (dt.ranges[180])
 		#print ('-------------------------------------------')
@@ -298,6 +334,7 @@ class Turtlebot():
 		self.front35left = dt.ranges[35]
 		self.front40left = dt.ranges[40]
 		self.front25left = dt. ranges[25]
+		self.front23left = dt. ranges[23]
 		self.front20left = dt. ranges[20]
 		self.front15left = dt. ranges[15]
 		self.front5left = dt. ranges[5]
@@ -305,6 +342,7 @@ class Turtlebot():
 		self.front5right = dt.ranges[355]
 		self.front15right = dt.ranges[345]
 		self.front20right = dt.ranges[340]
+		self.front23right = dt.ranges[337]
 		self.front25right = dt.ranges[335]
 		self.front30right = dt.ranges[330]
 		self.front35right = dt.ranges[325]
@@ -314,6 +352,7 @@ class Turtlebot():
 
 		thr1 = 0.35 # Laser scan range threshold
 		thr2 = 0.25
+
 
 		#Constantly scanning for obstacles whether or not obstacle has been detected, then determining turn direction
 		
@@ -335,115 +374,105 @@ class Turtlebot():
 				or self.front5right < (thr1+0.1) or self.front15right < (thr1+0.1)):
 			self.direction = 1
 
-		# If we just found or are currently travelling along an obstacle
-		if self.hitpoint == 1:
+		# OAP Algorithm, inspired by MBug
+		if self.alg == 1:
 
-			# Check if the obstacle is still or has appeared in front of us
-			if not(self.front_dist>thr1 and self.front15left>thr1 and self.front20left>thr1 and self.front40left>(thr2) and self.front15right>thr1 and self.front20right>thr1 and self.front40right>(thr2)):
-
-				# if there is an obstacle, keep rotating while still
-				rospy.loginfo("Just found or turning")
-				if self.direction == 1:
-					rospy.loginfo("Left")
-				if self.direction == -1:
-					rospy.loginfo("Right")
-				self.vel_obs.angular.z = 0.3*self.direction
-				self.vel_obs.linear.x = 0
-
-				# keep reporting an obstacle
-				self.isObstacle = True
-
-				#if no, check if the obstacle is to our sides
-			elif self.left_dist<thr2 or self.leftfront_dist<thr1 or self.right_dist<thr2 or self.rightfront_dist<thr1:
-
-				#if yes, stop rotating and start moving forward
-				rospy.loginfo("Travelling along obstacle")
-				self.vel_obs.angular.z = 0
+			# if no obstacle, drive forward
+			if (self.front_dist>thr1 and self.front15left>thr1 and self.front20left>thr1 and self.front23left>thr1 and self.front40left>thr2 and self.front15right>thr1 and self.front20right>thr1 and self.front23right>thr1 and self.front40right>thr2):
 				self.vel_obs.linear.x = 0.2
+				self.vel_obs.angular.z = 0.0 # since this is 0, the run method will use the PID rec value for angular velocity
+				self.tight_track = 0
+				rospy.loginfo(self.tight_track)
+				self.isObstacle = False
+			# if there is an obstacle, stop and turn away from it
+			else:
+				self.vel_obs.linear.x = 0.0 # stop
+				self.tight_track = self.tight_track + 1
+				rospy.loginfo(self.tight_track)
+				if self.tight_track > 25:
+					rospy.loginfo("This is a tight space! Inching backward for a better view!")
+					self.vel_obs.linear.x = -0.05
 
-				# keep reporting an obstacle
+				self.vel_obs.angular.z = 0.3*self.direction # rotate based on direction chosen earlier
 				self.isObstacle = True
 
-				# if not in front or at our sides, then we seem to have cleared the obstacle
-			else:
-
-				# report no obstacle so the run method can change the hitpoint value and check if this is a leave point
-				rospy.loginfo("Seem to have cleared")
-				self.isObstacle = False
-
-		# Behavior when hit point is 0, we have not yet encountered an or seemed to have cleared the obstacle
-		if self.hitpoint == 0:
-
-			# Check to confirm there is no obstacle in front of us
-			if (self.front_dist>thr1 and self.front15left>thr1 and self.front20left>thr1 and self.front40left>thr2 and self.front15right>thr1 and self.front20right>thr1 and self.front40right>thr2):
-				
-				# There is no obstacle!
-				# since this is 0, the run method will use the PID rec value for angular velocity to keep us on the goal line
-				self.vel_obs.angular.z = 0.0 
-				
-				# Move forward
-				self.vel_obs.linear.x = 0.2
-				
-				# Let the run method know there is no obstacle so we continue happy path/leave point trajectory
-				self.isObstacle = False
-
-			# if there is an obstacle in front of us
-			else:
-
-				rospy.loginfo("Found obstacle")
-
-				# Stop moving forward
-				self.vel_obs.linear.x = 0.0
-				self.vel_obs.angular.z = 0.3*self.direction
-
-				# Report to the run method to log a new hit point
+			# if there is still an obstacle at the sides, override turning and keep going straight
+			if self.left_dist<thr2 or self.leftfront_dist<thr1 or self.right_dist<thr2  or self.rightfront_dist<thr1:
 				self.isObstacle = True
 
+		# Bug 2 Algorithm
+		if self.alg == 2:
 
+			# If we just found or are currently travelling along an obstacle
+			if self.hitpoint == 1:
 
+				# Check if the obstacle is still or has appeared in front of us
+				if not(self.front_dist>thr1 and self.front15left>thr1 and self.front20left>thr1 and self.front23left>thr1 and self.front40left>(thr2) and self.front15right>thr1 and self.front20right>thr1 and self.front23right>thr1 and self.front40right>(thr2)):
 
-		# If an obstacle is in front of us, turn away
-		# If an obstacle is to the side of us, move forward and keep turning away from obstacle if you get closer (don't use rec, use constant)
-		# If the obstacle is behind us but not to the side, stop and turn 90 degrees
-		# if the obstacle is sloping, keep turning slightly away from the obstacle
+					# if there is an obstacle, keep rotating while still
+					rospy.loginfo("Just found or turning")
+					if self.direction == 1:
+						rospy.loginfo("Left")
+					if self.direction == -1:
+						rospy.loginfo("Right")
+					self.vel_obs.angular.z = 0.3*self.direction
+					self.vel_obs.linear.x = 0
+					
+					self.tight_track = self.tight_track + 1
+					rospy.loginfo(self.tight_track)
+					if self.tight_track > 25:
+						rospy.loginfo("This is a tight space! Inching backward for a better view!")
+						self.vel_obs.linear.x = -0.05
 
-		
-		# scan for obstacle, log direction we should turn if one is found, stop linear velocity, self.isObstacle = True
-		# if none are found, keep driving forward, self.isobstacle = False
+					# keep reporting an obstacle
+					self.isObstacle = True
 
+					#if no, check if the obstacle is to our sides
+				elif self.left_dist<thr2 or self.leftfront_dist<thr1 or self.right_dist<thr2 or self.rightfront_dist<thr1:
 
-		# Constantly scanning for obstacles while an obstacle has not been detected - when detected, save the direction we should turn
-		#if not self.isObstacle:
-			# if obstacle in front and open to the right, turn right
-		#	if (self.front_dist < (thr1+0.1) and (self.front20left  > 2*thr1 or self.leftfront_dist > 2*thr1)):
-		#		self.direction = 1
-			# if obstacle in front and open to the left, turn left
-		#	elif (self.front_dist < (thr1+0.1) and (self.frotn20right > 2*thr1 or self.rightfront_dist > 2*thr1)):
-		#		self.direction = -1
-			# if obstacle slopes to the right, turn left
-		#	elif (self.front5left < self.front_dist/cos(5*180/pi) or self.front15left < self.front_dist/cos(15*180/pi)) and (self.front_dist < (thr1+0.1)
-		#			or self.front5left < (thr1+0.1) or self.front15left < (thr1+0.1)):
-		#		self.direction = -1
-		#	# if obstacle slopes to the left, turn right
-		#	elif (self.front5right < self.front_dist/cos(5*180/pi) or self.front15right < self.front_dist/cos(15*180/pi)) and (self.front_dist < (thr1+0.1)
-		#			or self.front5right < (thr1+0.1) or self.front15right < (thr1+0.1)):
-		#		self.direction = 1
-		
-		# if no obstacle, drive forward
-		#if self.front_dist>thr1 and self.front15left>thr1 and self.front30left>thr2 and self.front15right>thr1 and self.front30right>thr2:
-		#	self.vel_obs.linear.x = 0.2
-		#	self.vel_obs.angular.z = 0.0 # since this is 0, the run method will use the PID rec value for angular velocity
-		#	self.isObstacle = False
-		# if there is an obstacle, stop and turn away from it
-		#else:
-		#	self.vel_obs.linear.x = 0.0 # stop
+					#if yes, stop rotating and start moving forward
+					rospy.loginfo("Travelling along obstacle")
+					self.vel_obs.angular.z = 0
+					self.vel_obs.linear.x = 0.2
+					self.tight_track = 0
 
-		#	self.vel_obs.angular.z = 0.2*self.direction # rotate based on direction chosen earlier
-		#	self.isObstacle = True
+					# keep reporting an obstacle
+					self.isObstacle = True
 
-		# if there is still an obstacle at the sides, override turning and keep going straight
-		#if self.left_dist<thr2 or self.leftfront_dist<thr1 or self.right_dist<thr2  or self.rightfront_dist<thr1:
-		#	self.isObstacle = True
+					# if not in front or at our sides, then we seem to have cleared the obstacle
+				else:
+
+					# report no obstacle so the run method can change the hitpoint value and check if this is a leave point
+					rospy.loginfo("Seem to have cleared")
+					self.isObstacle = False
+
+			# Behavior when hit point is 0, we have not yet encountered an or seemed to have cleared the obstacle
+			if self.hitpoint == 0:
+
+				# Check to confirm there is no obstacle in front of us
+				if (self.front_dist>thr1 and self.front15left>thr1 and self.front20left>thr1 and self.front40left>thr2 and self.front15right>thr1 and self.front20right>thr1 and self.front40right>thr2):
+				
+					# There is no obstacle!
+					# since this is 0, the run method will use the PID rec value for angular velocity to keep us on the goal line
+					self.vel_obs.angular.z = 0.0 
+				
+					# Move forward
+					self.vel_obs.linear.x = 0.2
+				
+					# Let the run method know there is no obstacle so we continue happy path/leave point trajectory
+					self.isObstacle = False
+
+				# if there is an obstacle in front of us
+				else:
+
+					rospy.loginfo("Found obstacle")
+
+					# Stop moving forward
+					self.vel_obs.linear.x = 0.0
+					self.vel_obs.angular.z = 0.3*self.direction
+
+					# Report to the run method to log a new hit point
+					self.isObstacle = True
 
 
 	def odom_callback(self, msg):
